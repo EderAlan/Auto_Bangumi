@@ -5,6 +5,7 @@ from module.models import Bangumi
 from module.models.bangumi import Episode
 from module.parser.analyser import (
     OpenAIParser,
+    gather_context,
     mikan_parser,
     raw_parser,
     tmdb_parser,
@@ -57,54 +58,108 @@ class TitleParser:
             logger.warning("Please change bangumi info manually.")
 
     @staticmethod
-    def raw_parser(raw: str) -> Bangumi | None:
-        language = settings.rss_parser.language
+    def _llm_parse(raw: str, language: str, context: dict | None = None) -> Episode | None:
+        """Call LLM to parse raw title into an Episode.
+
+        Returns None if LLM is disabled or parsing fails.
+        """
+        if not settings.experimental_openai.enable:
+            return None
+        if not settings.experimental_openai.api_key:
+            logger.debug("LLM api_key is empty, skipping LLM parse")
+            return None
+
+        kwargs = settings.experimental_openai.dict(
+            exclude={"enable", "parser_strategy"}
+        )
         try:
-            # use OpenAI ChatGPT to parse raw title and get structured data
-            if settings.experimental_openai.enable:
-                kwargs = settings.experimental_openai.dict(exclude={"enable"})
-                gpt = OpenAIParser(**kwargs)
-                episode_dict = gpt.parse(raw, asdict=True)
-                episode = Episode(**episode_dict)
+            gpt = OpenAIParser(**kwargs)
+            episode_dict = gpt.parse(
+                raw, asdict=True, context=context, language=language
+            )
+            if episode_dict is None:
+                return None
+            return Episode(**episode_dict)
+        except Exception as e:
+            logger.warning("LLM parse failed: %s", e)
+            return None
+
+    @staticmethod
+    def _build_bangumi(episode: Episode, language: str) -> Bangumi | None:
+        """Build a Bangumi model from an Episode."""
+        titles = {
+            "zh": episode.title_zh,
+            "en": episode.title_en,
+            "jp": episode.title_jp,
+        }
+        title_raw = episode.title_en or episode.title_zh or episode.title_jp
+        if not title_raw:
+            logger.warning("Cannot extract title_raw from episode, skipping")
+            return None
+
+        if titles[language]:
+            official_title = titles[language]
+        elif titles["zh"]:
+            official_title = titles["zh"]
+        elif titles["en"]:
+            official_title = titles["en"]
+        elif titles["jp"]:
+            official_title = titles["jp"]
+        else:
+            official_title = title_raw
+
+        return Bangumi(
+            official_title=official_title,
+            title_raw=title_raw,
+            season=episode.season,
+            season_raw=episode.season_raw,
+            group_name=episode.group,
+            dpi=episode.resolution,
+            source=episode.source,
+            subtitle=episode.sub,
+            eps_collect=False if episode.episode > 1 else True,
+            offset=0,
+            filter=",".join(settings.rss_parser.filter),
+        )
+
+    @staticmethod
+    def raw_parser(raw: str) -> Bangumi | None:
+        """Parse a raw torrent title into a Bangumi model.
+
+        Strategy is controlled by ``experimental_openai.parser_strategy``:
+
+        - ``"replace"``: Skip regex entirely, use LLM for every title.
+        - ``"fallback"``: Try regex first; if it fails, fall back to LLM.
+        """
+        language = settings.rss_parser.language
+        strategy = settings.experimental_openai.parser_strategy
+        try:
+            if strategy == "replace":
+                # --- Replace mode: LLM for everything ---
+                if settings.experimental_openai.enable:
+                    episode = TitleParser._llm_parse(raw, language)
+                    if episode is None:
+                        return None
+                else:
+                    episode = raw_parser(raw)
+                    if episode is None:
+                        return None
             else:
+                # --- Fallback mode: regex first, LLM on failure ---
                 episode = raw_parser(raw)
                 if episode is None:
-                    return None
+                    logger.warning(
+                        "Regex parse failed for '%s', falling back to LLM", raw
+                    )
+                    ctx = gather_context(raw, language)
+                    episode = TitleParser._llm_parse(raw, language, context=ctx)
+                    if episode is None:
+                        return None
+                    logger.info("LLM fallback succeeded for '%s'", raw)
 
-            titles = {
-                "zh": episode.title_zh,
-                "en": episode.title_en,
-                "jp": episode.title_jp,
-            }
-            title_raw = episode.title_en or episode.title_zh or episode.title_jp
-            if titles[language]:
-                official_title = titles[language]
-            elif titles["zh"]:
-                official_title = titles["zh"]
-            elif titles["en"]:
-                official_title = titles["en"]
-            elif titles["jp"]:
-                official_title = titles["jp"]
-            else:
-                official_title = title_raw
-            if not title_raw:
-                logger.warning("Cannot extract title_raw from '%s', skipping", raw)
-                return None
-            _season = episode.season
-            logger.debug("RAW:%s >> %s", raw, title_raw)
-            return Bangumi(
-                official_title=official_title,
-                title_raw=title_raw,
-                season=_season,
-                season_raw=episode.season_raw,
-                group_name=episode.group,
-                dpi=episode.resolution,
-                source=episode.source,
-                subtitle=episode.sub,
-                eps_collect=False if episode.episode > 1 else True,
-                offset=0,
-                filter=",".join(settings.rss_parser.filter),
-            )
+            logger.debug("RAW:%s >> %s", raw, episode.title_en or episode.title_zh)
+            return TitleParser._build_bangumi(episode, language)
+
         except (ValueError, AttributeError, TypeError) as e:
             logger.warning(f"Cannot parse '{raw}': {type(e).__name__}: {e}")
             return None

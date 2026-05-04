@@ -194,6 +194,10 @@ class Notification(BaseModel):
 
 class ExperimentalOpenAI(BaseModel):
     enable: bool = Field(False, description="Enable experimental OpenAI")
+    parser_strategy: Literal["replace", "fallback"] = Field(
+        "replace",
+        description="Parsing strategy: 'replace' uses LLM for all titles, 'fallback' uses LLM only when regex fails",
+    )
     api_key: str = Field("", description="OpenAI api key")
     api_base: str = Field(
         "https://api.openai.com/v1", description="OpenAI api base url"

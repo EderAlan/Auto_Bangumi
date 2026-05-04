@@ -43,6 +43,7 @@ DEFAULT_SETTINGS = {
     "notification": {"enable": False, "providers": []},
     "experimental_openai": {
         "enable": False,
+        "parser_strategy": "replace",
         "api_key": "",
         "api_base": "https://api.openai.com/v1",
         "api_type": "openai",
@@ -112,6 +113,16 @@ ENV_TO_ATTR = {
             ("username", lambda e: e.split(",")[2]),
             ("password", lambda e: e.split(",")[3]),
         ],
+    },
+    "experimental_openai": {
+        "AB_OPENAI_ENABLE": ("enable", lambda e: e.lower() in ("true", "1", "t")),
+        "AB_OPENAI_STRATEGY": "parser_strategy",
+        "AB_OPENAI_API_KEY": "api_key",
+        "AB_OPENAI_API_BASE": "api_base",
+        "AB_OPENAI_API_TYPE": "api_type",
+        "AB_OPENAI_API_VERSION": "api_version",
+        "AB_OPENAI_MODEL": "model",
+        "AB_OPENAI_DEPLOYMENT_ID": "deployment_id",
     },
 }
 
